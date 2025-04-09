@@ -1,3 +1,6 @@
+import os
+# 环境变量配置
+os.environ['MODELSCOPE_CACHE'] = './models'  # 模型缓存路径
 from core.analyzers import CoreAnalyzer
 from core.database import CodeVectorStore
 from .config import settings, paths
@@ -604,7 +607,7 @@ class CodeAuditService:
             
             # 进行代码分析
             issues = self.core_analyzer._check_suspicious(code, f"temp.{language}")
-            
+            print(issues)
             if not issues:
                 empty_report = self._generate_empty_report()
                 return {

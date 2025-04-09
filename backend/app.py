@@ -246,8 +246,8 @@ async def configure_api(
 @app.post("/api/audit")
 async def audit_code(
     file: UploadFile = File(...),
-    api_key: str = None,
-    api_base: str = None,
+    api_key: str = "sk-gegzkusxlqrcqhrrobzqahckpfctmrnwjprjjesbvflgmris",
+    api_base: str = "https://api.siliconflow.cn/v1",
     audit_service: CodeAuditService = Depends(get_audit_service)
 ):
     """审计代码，支持自定义API设置"""
@@ -260,8 +260,8 @@ async def audit_code(
         language = audit_service._check_file_type(file.filename)
         
         logger.info(f"开始分析{file.filename}")
-        
         result = await audit_service.analyze_code(code, language, api_key, api_base)
+        print(result)
         return result
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="文件编码错误")
