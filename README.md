@@ -1,6 +1,6 @@
-# Mirror Flowers (镜花) - AI 驱动的代码安全审计工具
+# 基于AI大模型代码审计系统 - AI 驱动的代码安全审计工具
 
-Mirror Flowers 是一个基于 AI 的代码安全审计工具，能够自动检测代码中的安全漏洞并提供详细的分析和修复建议。
+基于AI大模型代码审计系统 是一个基于 AI 的代码安全审计工具，能够自动检测代码中的安全漏洞并提供详细的分析和修复建议。
 
 ## 特性
 
@@ -208,8 +208,7 @@ SiliconFlow(硅基流动)注册可免费领取14元使用额度，可通过SMS�
 
 1. 克隆项目
 ```bash
-git clone https://github.com/Ky0toFu/Mirror-Flowers.git
-cd Mirror-Flowers
+
 ```
 
 2. 安装依赖（选择以下任一方式）
@@ -340,6 +339,16 @@ LOG_DIR=logs               # 日志目录
 ```bash
 pip install -e ".[dev]"
 ```
+mac系统直接执行下面操作安装sentence-transformers/all-MiniLM-L6-v2向量数据库
+```aiignore
+# 安装 ModelScope CLI
+pip install modelscope
+
+# 下载模型到本地目录
+modelscope download --model 'sentence-transformers/all-MiniLM-L6-v2' --local_dir './models'
+
+```
+windows系统直接执行git clone https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2 
 
 2. 代码格式化
 ```bash
@@ -366,6 +375,4 @@ pytest
 ### API 文档
 启动服务后访问：http://127.0.0.1:8000/docs
 
-## 联系方式
 
-如有问题或建议，请通过 Issue 与我联系。

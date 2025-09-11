@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     
     # 向量数据库配置
-    VECTOR_MODEL: str = "all-MiniLM-L6-v2"
+    VECTOR_MODEL: str = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B" #deepseek-ai/DeepSeek-R1-Distill-Qwen-7B  #all-MiniLM-L6-v2
     VECTOR_CHUNK_SIZE: int = 500
     VECTOR_CHUNK_OVERLAP: int = 100
     
