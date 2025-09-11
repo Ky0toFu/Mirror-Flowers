@@ -13,6 +13,8 @@ chromadb>=0.4.0
 sentence-transformers>=2.2.0
 langchain>=0.1.0
 langchain-community>=0.0.10
+langchain-chroma==0.2.5
+langchain-huggingface==0.3.1
 
 # Data Validation & Settings
 pydantic>=2.0.0
@@ -28,3 +30,7 @@ black>=22.0.0  # for code formatting
 isort>=5.10.0  # for import sorting
 flake8>=4.0.0  # for linting
 mypy>=0.950  # for type checking
+
+# Analyser tools
+phply==1.2.6 #for php analysis
+esprima==4.0.1 #for javascript analysis
