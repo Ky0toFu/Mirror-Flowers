@@ -1,12 +1,7 @@
-from pathlib import Path
-import os
-os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
-# # 设置 Hugging Face 缓存目录（影响所有相关库）
-os.environ["HF_HOME"] = "/models"  # 模型和数据集缓存
 from typing import List, Dict, Any
 import numpy as np
-from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import logging
 import asyncio
@@ -17,22 +12,10 @@ logger = logging.getLogger(__name__)
 
 class CodeVectorStore:
     def __init__(self, persist_directory: str = "vector_store"):
-
-        # 使用相对路径或从配置中获取模型路径
-        model_path = Path("models")  # 或者从配置中获取 paths.MODEL_DIR
-
-        # 确保路径存在
-        model_path.mkdir(parents=True,  exist_ok=True)
-
         """初始化向量数据库"""
-        # self.embeddings = HuggingFaceEmbeddings(
-        #     model_name="/Users/rocky/pene_tool/web_scan/Mirror-Flowers/models"
-        # )
-
-        self.embeddings  = HuggingFaceEmbeddings(
-            model_name=str(model_path.absolute())
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2"
         )
-
         self.vector_store = Chroma(
             persist_directory=str(persist_directory),
             embedding_function=self.embeddings,

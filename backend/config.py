@@ -4,6 +4,9 @@ import os
 from enum import Enum
 from pathlib import Path
 from urllib.parse import urlparse
+import logging
+
+logger = logging.getLogger(__name__)
 
 class LogLevel(str, Enum):
     DEBUG = "DEBUG"
@@ -23,9 +26,10 @@ class Settings(BaseSettings):
     LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     
     # 向量数据库配置
-    VECTOR_MODEL: str = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B" #deepseek-ai/DeepSeek-R1-Distill-Qwen-7B  #all-MiniLM-L6-v2
+    VECTOR_MODEL: str = "all-MiniLM-L6-v2"
     VECTOR_CHUNK_SIZE: int = 500
     VECTOR_CHUNK_OVERLAP: int = 100
+    VECTOR_BATCH_SIZE: int = int(os.getenv("VECTOR_BATCH_SIZE", "300"))
     
     # 支持的文件类型
     SUPPORTED_LANGUAGES: Dict[str, str] = {
@@ -46,6 +50,11 @@ class Settings(BaseSettings):
         "http://localhost:8000",     # FastAPI 服务器
         "http://127.0.0.1:8000",
     ]
+
+    # 并发/超时配置
+    SCAN_CONCURRENCY: int = int(os.getenv("SCAN_CONCURRENCY", "6"))
+    AI_CONCURRENCY: int = int(os.getenv("AI_CONCURRENCY", "3"))
+    AI_TIMEOUT_SEC: int = int(os.getenv("AI_TIMEOUT_SEC", "120"))
     
     def get_default_models(self, api_base: str) -> Dict[str, List[str]]:
         """根据API地址返回默认支持的模型列表"""

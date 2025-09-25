@@ -1,3 +1,5 @@
+import re
+
 class FrameworkAnalyzer:
     def __init__(self):
         self.framework_rules = {

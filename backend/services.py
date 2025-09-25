@@ -1,17 +1,15 @@
-import os
-# 环境变量配置
-os.environ['MODELSCOPE_CACHE'] = './models'  # 模型缓存路径
 from core.analyzers import CoreAnalyzer
 from core.database import CodeVectorStore
 from .config import settings, paths
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import asyncio
 from openai import AsyncOpenAI
 import json
 from pathlib import Path
 import os
 import re
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +22,10 @@ class CodeAuditService:
         self.model = settings.OPENAI_MODEL
         self.config_file = paths.config_dir / "api_config.json"
         
+        self._runtime_api_key: Optional[str] = None
+        self._runtime_api_base: Optional[str] = None
+        self._runtime_model: Optional[str] = None
+        
     async def ensure_initialized(self):
         """确保服务已初始化"""
         try:
@@ -33,10 +35,9 @@ class CodeAuditService:
             # 如果有配置，验证并更新模型
             if self.openai_api_key and self.api_base:
                 try:
-                    # 确保 API 基础 URL 正确
-                    if not self.api_base.endswith('/v1'):
-                        self.api_base = self.api_base.rstrip('/') + '/v1'
-                        
+                    # 规范化 API 基础 URL（按提供商）
+                    self.api_base = self._normalize_base_url(self.api_base)
+                    
                     client = AsyncOpenAI(
                         api_key=self.openai_api_key,
                         base_url=self.api_base
@@ -47,13 +48,15 @@ class CodeAuditService:
                     # 验证当前模型
                     if not self.model or self.model not in available_models:
                         # 选择一个默认的可用模型
-                        yi_models = [m for m in available_models if m.startswith('01-ai/Yi-1.5')]
-                        self.model = yi_models[0] if yi_models else available_models[0]
-                        await self.save_config()
+                        preferred = [
+                            m for m in available_models
+                        ]
+                        if preferred:
+                            self.model = preferred[0]
+                            await self.save_config()
                         
                 except Exception as e:
                     logger.warning(f"API验证失败，使用默认配置: {str(e)}")
-                    # 如果验证失败，使用默认配置
                     if not self.model:
                         self.model = settings.OPENAI_MODEL
             
@@ -94,16 +97,60 @@ class CodeAuditService:
                 logger.info(f"已加载保存的配置，使用模型: {self.model}")
         except Exception as e:
             logger.error(f"加载配置失败: {str(e)}")
-            
+        
+    def _normalize_base_url(self, api_base: Optional[str]) -> Optional[str]:
+        if not api_base:
+            return api_base
+        try:
+            parsed = urlparse(api_base)
+            host = parsed.netloc or parsed.path  # 支持传入裸域名
+            base = api_base.rstrip('/')
+            # Z.AI（OpenAI 兼容，路径 /api/paas/v4）
+            if 'z.ai' in host and '/api/paas/' not in base:
+                return f"{base}/api/paas/v4/"
+            # SiliconFlow（OpenAI 兼容 /v1）
+            if ('siliconflow' in host) and not base.endswith('/v1'):
+                return f"{base}/v1"
+            # Moonshot / OpenAI（/v1）
+            if ('openai.' in host or 'moonshot' in host or 'api.moonshot' in host) and not base.endswith('/v1'):
+                return f"{base}/v1"
+            return api_base
+        except Exception:
+            return api_base
+
+    def _apply_runtime_openai_config(self, api_key: Optional[str], api_base: Optional[str], model: Optional[str] = None):
+        """根据请求覆盖当前的 OpenAI 配置"""
+        if api_key:
+            self._runtime_api_key = api_key
+        if api_base:
+            self._runtime_api_base = self._normalize_base_url(api_base)
+        if model:
+            self._runtime_model = model
+
+    def _clear_runtime_openai_config(self):
+        self._runtime_api_key = None
+        self._runtime_api_base = None
+        self._runtime_model = None
+
+    def _resolve_openai_config(self) -> Dict[str, Optional[str]]:
+        """聚合当前可用的 OpenAI 配置"""
+        api_key = self._runtime_api_key or self.openai_api_key or settings.OPENAI_API_KEY
+        api_base = self._runtime_api_base or self.api_base or settings.OPENAI_API_BASE
+        api_base = self._normalize_base_url(api_base)
+        model = self._runtime_model or self.model or settings.OPENAI_MODEL
+        return {
+            "api_key": api_key,
+            "api_base": api_base,
+            "model": model
+        }
+
     async def configure_openai(self, api_key: str, api_base: str = None, model: str = None):
         """配置OpenAI API设置"""
         try:
             self.openai_api_key = api_key
-            # 确保 API 基础 URL 正确
+            # 规范化 API 基础 URL
             if api_base:
-                if not api_base.endswith('/v1'):
-                    api_base = api_base.rstrip('/') + '/v1'
-                self.api_base = api_base
+                self.api_base = self._normalize_base_url(api_base)
             
             # 验证配置
             client = AsyncOpenAI(
@@ -119,13 +166,7 @@ class CodeAuditService:
                 
                 # 如果指定了模型，验证是否可用
                 if model:
-                    # 对于某些API，模型ID可能需要添加前缀
-                    model_variants = [
-                        model,
-                        f"01-ai/{model}",
-                        model.replace("01-ai/", "")
-                    ]
-                    
+                    model_variants = [model, model.replace("01-ai/", ""), f"01-ai/{model}"]
                     for variant in model_variants:
                         if variant in available_models:
                             self.model = variant
@@ -133,13 +174,9 @@ class CodeAuditService:
                             break
                     else:
                         logger.warning(f"选择的模型 {model} 不在可用模型列表中")
-                        # 选择一个默认的可用模型
-                        yi_models = [m for m in available_models if m.startswith('01-ai/Yi-1.5')]
-                        self.model = yi_models[0] if yi_models else available_models[0]
+                        self.model = available_models[0] if available_models else model
                 else:
-                    # 选择一个默认的可用模型
-                    yi_models = [m for m in available_models if m.startswith('01-ai/Yi-1.5')]
-                    self.model = yi_models[0] if yi_models else available_models[0]
+                    self.model = available_models[0] if available_models else self.model
                     
                 logger.info(f"最终使用模型: {self.model}")
                 
@@ -154,9 +191,12 @@ class CodeAuditService:
             logger.error(f"配置 OpenAI API 失败: {str(e)}")
             raise
 
-    async def analyze_project(self, project_path: str) -> Dict[str, Any]:
+    async def analyze_project(self, project_path: str, api_key: Optional[str] = None, api_base: Optional[str] = None, model: Optional[str] = None) -> Dict[str, Any]:
         """分析整个项目"""
         try:
+            # 按需覆盖运行时配置
+            self._apply_runtime_openai_config(api_key, api_base, model)
+
             # 1. 初始化分析器和向量数据库
             await self.ensure_initialized()
             await self.ensure_analysis_ready()
@@ -196,10 +236,13 @@ class CodeAuditService:
             # 5. AI 深度分析
             logger.info("开始AI验证...")
             try:
-                results = await self.core_analyzer._ai_verify_suspicious(suspicious_files)
+                resolved_config = self._resolve_openai_config()
+                results = await self.core_analyzer._ai_verify_suspicious(suspicious_files, resolved_config)
             except Exception as e:
                 logger.error(f"AI验证失败: {str(e)}")
                 results = {}
+            finally:
+                self._clear_runtime_openai_config()
             
             # 6. 生成最终报告
             return {
@@ -509,18 +552,17 @@ class CodeAuditService:
         try:
             for file in suspicious_files:
                 file_path = file.get("file_path", "")
-                ai_result = ai_results.get(file_path, {}).get("ai_analysis", {})
-                
-                if isinstance(ai_result, dict):
-                    recs = ai_result.get("recommendations", [])
-                    for rec in recs:
-                        if isinstance(rec, dict):
-                            recommendations.append({
-                                "file": file_path,
-                                "issue": rec.get("issue", ""),
-                                "solution": rec.get("solution", "")
-                            })
-                        
+                ai_result = ai_results.get(file_path, {})
+                analysis = (ai_result.get("ai_analysis") or {}).get("analysis") or {}
+                recs = analysis.get("recommendations", [])
+                for rec in recs:
+                    if isinstance(rec, dict):
+                        recommendations.append({
+                            "file": file_path,
+                            "issue": rec.get("issue", ""),
+                            "solution": rec.get("solution", "")
+                        })
+            
         except Exception as e:
             logger.error(f"生成修复建议失败: {str(e)}")
         
@@ -598,16 +640,31 @@ class CodeAuditService:
         }
         return language_map.get(ext, 'unknown')
 
-    async def analyze_code(self, code: str, language: str, api_key: str = None, api_base: str = None) -> Dict[str, Any]:
+    async def analyze_code(self, code: str, language: str, api_key: str = None, api_base: str = None, file_name: str = "uploaded_file", model: Optional[str] = None) -> Dict[str, Any]:
         """分析单个代码文件"""
         try:
+            self._apply_runtime_openai_config(api_key, api_base, model)
             # 初始化
             await self.ensure_initialized()
             await self.ensure_analysis_ready()
             
             # 进行代码分析
-            issues = self.core_analyzer._check_suspicious(code, f"temp.{language}")
-            print(issues)
+            faux_path = file_name if file_name else f"temp.{language}" if language else "temp.unknown"
+            issues = self.core_analyzer._check_suspicious(code, faux_path)
+
+            # 尝试额外的动态检测（例如常见ORM执行函数）
+            if language == 'python' and not issues:
+                orm_sinks = ['Session.execute', 'cursor.execute', 'raw', 'executesql']
+                for sink in orm_sinks:
+                    if sink in code:
+                        issues.append({
+                            "type": "sql_injection",
+                            "line": 0,
+                            "description": f"检测到潜在的数据库执行调用: {sink}",
+                            "severity": "medium"
+                        })
+                        break
+ 
             if not issues:
                 empty_report = self._generate_empty_report()
                 return {
@@ -622,7 +679,7 @@ class CodeAuditService:
             
             # 生成报告
             report = self._generate_report([{
-                "file_path": f"temp.{language}",
+                "file_path": faux_path,
                 "issues": issues,
                 "language": language
             }], {})
@@ -635,7 +692,7 @@ class CodeAuditService:
                 "details": report["details"],
                 "recommendations": report["recommendations"]
             }
-            
+        
         except Exception as e:
             logger.error(f"代码分析失败: {str(e)}")
             empty_report = self._generate_empty_report()
@@ -648,6 +705,8 @@ class CodeAuditService:
                 "details": empty_report["details"],
                 "recommendations": empty_report["recommendations"]
             }
+        finally:
+            self._clear_runtime_openai_config()
 
     def scan_project(self, project_path: str) -> List[str]:
         """扫描项目文件"""
@@ -661,7 +720,7 @@ class CodeAuditService:
                     file_path = os.path.join(root, file)
                     # 添加调试日志
                     logger.debug(f"检查文件: {file_path}")
-                    if file_path.endswith(('.php', '.blade.php', '.js', '.ts', '.tsx', '.py')):
+                    if file_path.endswith(('.php', '.blade.php', '.js', '.ts', '.tsx', '.py', '.java', '.jsp', '.jspx')):
                         valid_files.append(file_path)
                         logger.debug(f"添加有效文件: {file_path}")
                         

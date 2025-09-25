@@ -31,15 +31,27 @@
     
     <div class="results-section" v-if="auditResults">
       <h2>审计结果</h2>
-      
-      <div class="analysis-card">
-        <h3>第一轮分析</h3>
-        <pre>{{ auditResults.first_analysis }}</pre>
+      <div v-if="'suspicious_files' in auditResults">
+        <div class="analysis-card">
+          <h3>摘要</h3>
+          <ul>
+            <li>状态: {{ auditResults.status }}</li>
+            <li>可疑文件数: {{ auditResults.summary?.suspicious_files ?? 0 }}</li>
+            <li>总问题数: {{ auditResults.summary?.total_issues ?? 0 }}</li>
+            <li>风险等级: {{ auditResults.summary?.risk_level ?? 'unknown' }}</li>
+          </ul>
+        </div>
+        <div
+          v-for="file in auditResults.suspicious_files"
+          :key="file.file_path"
+          class="analysis-card"
+        >
+          <h3>{{ file.file_path }}</h3>
+          <pre>{{ JSON.stringify(file.issues, null, 2) }}</pre>
+        </div>
       </div>
-      
-      <div class="analysis-card">
-        <h3>第二轮验证</h3>
-        <pre>{{ auditResults.second_analysis }}</pre>
+      <div v-else>
+        <pre>{{ JSON.stringify(auditResults, null, 2) }}</pre>
       </div>
     </div>
     
@@ -49,22 +61,28 @@
   </div>
 </template>
 
-<script>
-export default {
-  data() {
-    return {
-      selectedFile: null,
-      auditResults: null,
-      loading: false,
-      apiKey: '',
-      apiBase: '',
-      fileLanguage: null
-    }
-  },
-  methods: {
+<script lang="ts">
+import { defineComponent } from 'vue'
+import { submitProject } from './services/audit'
+import type { SingleFileAuditResult, ProjectAuditResult } from './types/audit'
+
+ type AuditView = SingleFileAuditResult | ProjectAuditResult | null
+
+ export default defineComponent({
+   data() {
+     return {
+       selectedFile: null as File | null,
+       auditResults: null as AuditView,
+       loading: false,
+       apiKey: '',
+       apiBase: '',
+       fileLanguage: null as string | null
+     }
+   },
+   methods: {
     async updateConfig() {
       try {
-        const response = await fetch('http://localhost:8000/api/configure', {
+        const response = await fetch('/api/configure', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -76,13 +94,13 @@ export default {
         });
         
         if (response.ok) {
-          alert('API配置已更新');
+          window.alert('API配置已更新');
         } else {
           throw new Error('配置更新失败');
         }
       } catch (error) {
         console.error('配置更新失败:', error);
-        alert('配置更新失败');
+        window.alert('配置更新失败');
       }
     },
     
@@ -97,7 +115,7 @@ export default {
       
       const fileExt = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
       if (!supportedTypes[fileExt]) {
-        this.$message.error('不支持的文件类型。支持的文件类型包括: .php, .java, .py, .js');
+        window.alert('不支持的文件类型。支持的文件类型包括: .php, .java, .py, .js');
         return;
       }
       
@@ -109,31 +127,32 @@ export default {
       if (!this.selectedFile) return
       
       this.loading = true
-      const formData = new FormData()
-      formData.append('file', this.selectedFile)
-      
-      // 添加API配置
-      if (this.apiKey) {
-        formData.append('api_key', this.apiKey)
-      }
-      if (this.apiBase) {
-        formData.append('api_base', this.apiBase)
-      }
       
       try {
-        const response = await fetch('http://localhost:8000/api/audit', {
+        const formData = new FormData()
+        formData.append('file', this.selectedFile)
+        if (this.apiKey) {
+          formData.append('api_key', this.apiKey)
+        }
+        if (this.apiBase) {
+          formData.append('api_base', this.apiBase)
+        }
+
+        const response = await fetch('/api/audit', {
           method: 'POST',
           body: formData
         })
-        
+
         if (!response.ok) {
-          throw new Error('审计请求失败')
+          const errorBody = await response.json()
+          throw new Error(errorBody.detail || '审计请求失败')
         }
-        
-        this.auditResults = await response.json()
+
+        const result = (await response.json())
+        this.auditResults = result
       } catch (error) {
         console.error('审计失败:', error)
-        alert('审计过程中发生错误')
+        window.alert(`审计过程中发生错误: ${error instanceof Error ? error.message : '未知错误'}`)
       } finally {
         this.loading = false
       }

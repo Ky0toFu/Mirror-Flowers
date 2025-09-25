@@ -1,378 +1,136 @@
-# 基于AI大模型代码审计系统 - AI 驱动的代码安全审计工具
+# Mirror Flowers (镜花) · AI 代码安全审计工具
 
-基于AI大模型代码审计系统 是一个基于 AI 的代码安全审计工具，能够自动检测代码中的安全漏洞并提供详细的分析和修复建议。
+Mirror Flowers 是一个开箱即用的代码安全审计工具，集成本地静态扫描（行级污点追踪 + AST）与 AI 验证，帮助你快速发现并定位高风险问题，并给出修复建议。
 
-## 特性
+## 核心能力
+- 多语言：PHP / Python / JavaScript/TypeScript / Java
+- 本地静态扫描：行级污点追踪 + AST 访问器，结果合并去重，误报更少
+- AI 验证（可选）：调用 OpenAI 兼容接口，对命中的可疑点给出证据、影响与修复建议
+- 单文件/项目两种模式：
+  - 单文件：轻量、无需向量库加载
+  - 项目：支持 `.zip/.tar.gz/.tgz` 上传，自动解压；可按需导入向量库做上下文辅助
+- 并发加速：文件扫描、AI 验证都带并发与超时保护
+- 一体化 UI：在 `/ui` 直接上传文件/项目即可得到可视化结果（按漏洞类型分组、AI 建议就地展示）
+- 兼容多家 OpenAI 接口提供商：Z.AI / SiliconFlow / Moonshot（Kimi）等（自动规范化 base_url）
 
-- 支持多种编程语言（PHP、Python、Java、JavaScript）
-- 本地静态代码分析
-- AI 驱动的漏洞验证和分析
-- 详细的安全报告和修复建议
-- 支持单文件和项目文件夹分析
-- 深色/浅色主题切换
-- 实时分析进度显示
+## 最新变更（2025-09-25）
+- 检测精度：
+  - PHP 新增行级污点追踪（支持变量先赋值再用于 include/require、SQL、文件操作等敏感点）
+  - AST 与行级结果合并去重，降低漏报/误报
+  - 项目扫描拓展到 `.java/.jsp/.jspx`
+- AI 与前端：
+  - `/api/audit`、`/api/audit/project` 支持通过 multipart 按请求覆盖 `api_key`/`api_base`
+  - 修复建议路径规范化，前端稳定展示
+- 兼容与性能：
+  - 向量库改为惰性初始化（单文件审计不拉取嵌入模型）
+  - 前端不再强制拼 `/v1`，由后端统一归一化 `api_base`
 
+## 快速开始
+### 依赖
+- Python 3.9+
+- 无需单独安装前端构建工具（内置静态页面）
 
-## 更新记录
-### 2025-02-17
-- 修复了API配置保存和调用的问题
-- 修复了AI分析结果在前端显示的问题
-- 优化了JSON响应格式，确保前端能正确解析和显示AI分析建议
-
-
-### 2025-02-14
-- 优化了依赖管理：
-  - 更新了 setup.py 配置
-  - 重构了 requirements.txt
-  - 添加了开发依赖选项
-- 改进了前端显示：
-  - 优化了 AI 分析建议的展示
-  - 添加了更详细的漏洞分析信息
-  - 改进了深色模式支持
-- 文档更新：
-  - 完善了安装说明
-  - 添加了详细的使用说明
-  - 更新了 API 配置说明
-- 核心功能增强：
-  - 实现了基于向量数据库的代码分析
-  - 支持将所有源码导入本地向量库
-  - 新增指定方法获取潜在漏洞入口点
-  - 实现 AI 与向量库关联分析功能
-  - 优化了代码上下文理解能力
-  - 提高了漏洞分析的准确性
-
-### 2025-02-11
-- 完善了Python代码分析功能：
-  - 添加了完整的依赖分析，支持追踪导入关系和别名
-  - 增强了函数调用分析，支持类方法和实例方法的调用追踪
-  - 添加了变量使用分析，支持追踪全局变量和实例变量
-  - 改进了类继承分析，支持多级继承路径分析
-- 优化了分析器架构：
-  - 使用访问者模式重构了代码分析逻辑
-  - 添加了类型提示和详细文档
-  - 改进了错误处理机制
-
-## 支持的API接口
-
-FREEGPTAPI：https://github.com/popjane/free_chatgpt_api
-
-SiliconFlow(硅基流动)：https://cloud.siliconflow.cn/i/JzMCyiJ3
-
-如需要使用GPT大模型则使用FREEGPTAPI，使用DeepSeek-R1大模型则使用SiliconFlow API。
-
-SiliconFlow(硅基流动)注册可免费领取14元使用额度，可通过SMS接码平台注册账号，理论可无限免费使用API KEY。
-
-### API 配置说明
-
-配置文件位置: `config/api_config.json`
-
-
-
-```json
-
-{
-
-    "api_key": "your_api_key",
-
-    "api_base": "your_api_base_url",
-
-    "model": "your_preferred_model"
-
-}
-
-```
-
-
-## 核心功能
-
-### 多语言支持
-- PHP
-- Java
-- Python
-- JavaScript
-
-### 依赖分析
-- Maven (pom.xml)
-- NPM (package.json)
-- Python (requirements.txt)
-- Composer (composer.json)
-
-### 框架安全分析
-- Spring Framework
-  - Spring Security配置审计
-  - 权限控制检查
-  - CSRF/XSS防护
-  - 跨域配置检查
-
-- Django
-  - 中间件配置检查
-  - CSRF Token验证
-  - XSS防护配置
-  - 调试模式检查
-
-- Express.js
-  - 安全中间件配置
-  - 认证机制检查
-  - CORS配置审计
-  - 输入验证检查
-
-- Hibernate
-  - HQL注入检测
-  - 缓存配置审计
-  - 实体验证检查
-  - 会话管理检查
-
-### 安全检查特性
-
-#### PHP安全检查
-- 文件包含漏洞（include/require）
-- SQL注入（mysql_*函数）
-- 命令注入（system, exec, shell_exec）
-- 文件上传漏洞
-- 反序列化漏洞（unserialize）
-- XSS（echo, print）
-- SSRF漏洞
-- 目录遍历
-- 会话管理问题
-- 配置文件泄露
-
-#### Java安全检查
-- SQL注入（PreparedStatement相关）
-- 命令注入（Runtime.exec, ProcessBuilder）
-- XXE漏洞（XML解析器配置）
-- 反序列化漏洞（readObject）
-- 不安全的文件操作
-- CSRF/XSS防护
-- 权限控制缺陷
-- 线程安全问题
-- 密码学实现缺陷
-- 日志信息泄露
-
-#### Python安全检查
-- 不安全的反序列化（pickle.loads, yaml.load）
-- 命令注入（os.system, eval, exec, subprocess）
-- 不安全的模块导入（__import__）
-- SQL注入（字符串格式化, execute）
-- 路径遍历（open, os.path）
-- 模板注入（render_template_string）
-- 密码学实现问题（weak random）
-- 环境变量泄露
-- 调试配置泄露
-- 不安全的依赖加载
-
-#### JavaScript安全检查
-- XSS（DOM型和反射型）
-- 原型污染
-- 不安全的第三方依赖
-- 客户端存储安全
-- 不安全的随机数生成
-- CSRF防护缺失
-- 跨域配置问题
-- 敏感信息泄露
-- 不安全的正则表达式
-- 事件监听器泄露
-
-### 分析器组件
-- TaintAnalyzer: 污点分析和数据流追踪
-- SecurityAnalyzer: 通用安全问题检测
-- DependencyAnalyzer: 依赖组件安全分析
-- FrameworkAnalyzer: 框架特定安全检查
-- ConfigAnalyzer: 配置文件安全分析
-- ContextAnalyzer: 上下文感知分析
-
-### 向量数据库分析
-- 代码向量化：
-  - 支持多种编程语言的代码向量化
-  - 保留代码语义和结构信息
-  - 高效的本地向量存储
-
-- 漏洞入口分析：
-  - 智能识别潜在漏洞入口点
-  - 基于上下文的代码关联分析
-  - 支持跨文件依赖追踪
-
-- AI 关联分析：
-  - 与向量库深度集成
-  - 基于相似度的代码片段匹配
-  - 智能关联漏洞模式识别
-  - 上下文感知的安全建议
-
-## 安装和配置
-
-### 环境要求
-- Python 3.8+
-- FastAPI
-- Node.js (前端开发)
-
-### 快速开始
-
-1. 克隆项目
-```bash
-
-```
-
-2. 安装依赖（选择以下任一方式）
-
-方法 1: 开发模式安装
-```bash
-pip install -e .
-```
-
-方法 2: 从 requirements.txt 安装
+### 安装
 ```bash
 pip install -r requirements.txt
 ```
 
-安装开发依赖（可选）
+### 运行
+开发模式：
 ```bash
-pip install -e ".[dev]"
+uvicorn backend.app:app --reload --host 127.0.0.1 --port 8000
 ```
+访问 UI：`http://127.0.0.1:8000/ui`
 
-3. 配置环境变量
+## 配置模型提供商（OpenAI 兼容）
+你可以通过环境变量或 API 配置。后端会自动规范化不同厂商的 base_url（兼容 Z.AI `/api/paas/v4`、SiliconFlow `/v1`、Moonshot/OpenAI `/v1`）。
+
+方式 A · 环境变量（可选）
 ```env
-OPENAI_API_KEY=your_api_key_here
-OPENAI_API_BASE=your_api_base_url
-OPENAI_MODEL=your_preferred_model
+OPENAI_API_KEY=your_key
+OPENAI_API_BASE=https://api.siliconflow.cn
+OPENAI_MODEL=moonshotai/Kimi-K2-Instruct-0905   # 或任意可用模型
 ```
 
-4. 启动服务
+方式 B · 通过接口配置（推荐）
 ```bash
-uvicorn backend.app:app --reload
-```
+# Z.AI（GLM-4.5 示例）
+curl -X POST http://127.0.0.1:8000/api/configure \
+  -H 'Content-Type: application/json' \
+  -d '{"api_key":"YOUR_ZAI_API_KEY","api_base":"https://api.z.ai","model":"glm-4.5"}'
 
-5. 访问Mirror-Flowers
-```bash
-http://localhost:8000/ui
-```
+# SiliconFlow（DeepSeek/Kimi/GLM 示例）
+curl -X POST http://127.0.0.1:8000/api/configure \
+  -H 'Content-Type: application/json' \
+  -d '{"api_key":"YOUR_SF_KEY","api_base":"https://api.siliconflow.cn","model":"deepseek-ai/DeepSeek-R1"}'
 
-## 访问
-- Web 界面：http://127.0.0.1:8000/ui
-- API 文档：http://127.0.0.1:8000/docs
+# Moonshot / Kimi（K2 示例）
+curl -X POST http://127.0.0.1:8000/api/configure \
+  -H 'Content-Type: application/json' \
+  -d '{"api_key":"YOUR_MOONSHOT_KEY","api_base":"https://api.moonshot.cn","model":"moonshotai/Kimi-K2-Instruct-0905"}'
+```
+> 注：UI 中更新配置同样生效；你也可以在上传时以 multipart 字段临时覆盖 `api_key`/`api_base`。
 
 ## 使用方法
+### 方式一：Web UI（推荐）
+1. 打开 `http://127.0.0.1:8000/ui`
+2. 在“API 配置”中填入 Key / Base / 模型（或使用已保存配置）
+3. 选择“单文件审计”或“项目文件夹审计”并上传
+4. 查看“审计摘要”“问题（按类型分组）”“AI 建议”
 
-1. 访问 Web 界面
-2. 配置更新 API
-3. 选择分析模式（单文件/项目文件夹）
-4. 上传代码文件
-5. 等待分析完成
-6. 查看分析结果和 AI 建议
-
-## 支持的文件类型
-
-- PHP: `.php`
-- Python: `.py`, `.pyw`
-- Java: `.java`, `.jsp`
-- JavaScript: `.js`, `.jsx`, `.ts`, `.tsx`
-- 辅助文件: `.html`, `.css`, `.json`, `.xml`, `.yml`, `.yaml`
-
-## 贡献
-
-欢迎提交 Pull Requests 和 Issues。
-
-## 注意事项
-1. API密钥安全：请妥善保管API密钥
-2. 分析时间：大型项目可能需要较长时间
-3. 结果验证：建议结合人工审查
-4. API配置问题：如果提示"API配置更新错误"或"不存在某个模型"，请检查API Base URL格式，尝试在URL后添加/v1或删除/v1（例如：https://api.example.com 或 https://api.example.com/v1）
-
-
-## 项目结构
-```
-Mirror-Flowers/
-├── frontend/          # Vue.js前端
-├── backend/           # Python FastAPI后端
-│   ├── static/        # 静态资源文件
-│   ├── services/      # 业务逻辑服务
-│   └── config.py      # 配置文件
-├── core/              # 核心审计逻辑
-│   ├── analyzers/     # 各种分析器
-│   ├── parsers/       # 代码解析器
-│   └── ai/           # AI分析模块
-└── docker/           # Docker配置文件
-```
-
-## 技术架构
-
-### 后端组件
-- FastAPI: Web框架
-- ChromaDB: 向量数据库
-- LangChain: AI链式调用
-- OpenAI/DeepSeek: 大语言模型
-
-### 前端技术
-- Bootstrap 5.1.3
-- Vue.js (可选)
-
-### 核心功能实现
-- 向量数据库集成
-  - 使用 ChromaDB 存储代码向量
-  - 支持语义相似度搜索
-  - 实现代码上下文关联
-
-- AI 分析流程
-  - 静态代码扫描
-  - 向量数据库导入
-  - AI 验证分析
-  - 漏洞关联分析
-  - 修复建议生成
-
-## 环境变量说明
-```env
-# 必需配置
-OPENAI_API_KEY=your_api_key_here
-OPENAI_API_BASE=your_api_base_url
-OPENAI_MODEL=your_preferred_model
-
-# 可选配置
-LOG_LEVEL=INFO              # 日志级别：DEBUG/INFO/WARNING/ERROR
-CORS_ORIGINS=["*"]          # CORS 配置
-VECTOR_STORE_DIR=vector_db  # 向量数据库存储目录
-UPLOAD_DIR=uploads          # 文件上传目录
-LOG_DIR=logs               # 日志目录
-```
-
-## 开发指南
-
-### 本地开发
-1. 安装开发依赖
+### 方式二：HTTP API
+- 单文件审计
 ```bash
-pip install -e ".[dev]"
+curl -X POST http://127.0.0.1:8000/api/audit \
+  -F file=@/path/to/file.php \
+  -F api_key=YOUR_KEY \
+  -F api_base=https://api.siliconflow.cn
 ```
-mac系统直接执行下面操作安装sentence-transformers/all-MiniLM-L6-v2向量数据库
-```aiignore
-# 安装 ModelScope CLI
-pip install modelscope
-
-# 下载模型到本地目录
-modelscope download --model 'sentence-transformers/all-MiniLM-L6-v2' --local_dir './models'
-
-```
-windows系统直接执行git clone https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2 
-
-2. 代码格式化
+- 项目审计（支持 .zip/.tar.gz/.tgz）
 ```bash
-black .
-isort .
+curl -X POST http://127.0.0.1:8000/api/audit/project \
+  -F project=@/path/to/project.zip \
+  -F api_key=YOUR_KEY \
+  -F api_base=https://api.siliconflow.cn
 ```
 
-3. 类型检查
+## 可调参数（环境变量）
+- `SCAN_CONCURRENCY`（默认 6）：文件扫描并发度
+- `AI_CONCURRENCY`（默认 3）：AI 验证并发度
+- `AI_TIMEOUT_SEC`（默认 120）：单条 AI 验证超时
+- `VECTOR_BATCH_SIZE`（默认 300）：向量导入批大小（项目模式）
+
+## 主要能力与覆盖
+- PHP：文件包含（include/require）、命令执行（system/exec 等）、SQL 注入（含拼接启发式）、XSS、上传风险、弱哈希（md5/sha1）、不安全反序列化、会话固定、参数污染（$_REQUEST）、IDOR 启发式
+- Python：命令执行（os/subprocess/eval/exec）、SQL 注入（execute 拼接）、路径遍历、不安全反序列化（pickle/yaml）
+- JS/TS：危险函数（eval/Function/document.write 等）、DOM XSS、原型污染、不安全随机数
+- Java：常见 SQL 拼接、命令执行（Runtime.exec/ProcessBuilder）、XXE/HQL 风险等（启发式）
+
+> 说明：项目级别还支持（可选）向量库导入，用于相似代码与上下文检索；单文件模式不会加载嵌入模型，启动更快。
+
+## API 列表
+- `GET  /health` 健康检查
+- `GET  /api/models` 拉取可用模型（按提供商自动规范化 base_url）
+- `POST /api/configure` 更新 Key/Base/Model（JSON）
+- `POST /api/audit` 单文件审计（multipart：`file`，可选 `api_key/api_base`）
+- `POST /api/audit/project` 项目审计（multipart：`project`，可选 `api_key/api_base`）
+- `GET  /ui` 前端页面
+
+## 运行建议
+- 生产建议使用多 worker：
 ```bash
-mypy .
+uvicorn backend.app:app --host 0.0.0.0 --port 8000 --workers 2
 ```
+- 根据机器与配额适当调高 `SCAN_CONCURRENCY`、`AI_CONCURRENCY`，并观察资源与速率限制
 
-4. 运行测试
-```bash
-pytest
-```
+## 常见问题
+- 首次运行下载嵌入模型较慢？
+  - 仅项目模式导入向量库会触发下载；单文件模式默认不会下载/加载嵌入模型
+- Windows 上出现 HuggingFace symlink 警告？
+  - 可忽略；或以管理员/开发者模式运行
+- `/api/models` 拉取失败？
+  - 检查 `api_key/api_base` 是否正确；无需在前端拼 `/v1`，后端会统一规范化
 
-### 目录说明
-- `backend/static/`: 存放前端静态文件
-- `core/analyzers/`: 核心分析器实现
-- `core/parsers/`: 各语言解析器
-- `core/ai/`: AI 模型集成
+---
 
-### API 文档
-启动服务后访问：http://127.0.0.1:8000/docs
-
-
+如果你需要进一步扩展更多语言/框架规则，或接入其它 OpenAI 兼容平台，欢迎提交 Issue / PR。

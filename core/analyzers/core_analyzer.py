@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Set, Tuple
 from pathlib import Path
 import logging
 from .taint_analyzer import TaintAnalyzer
@@ -23,7 +23,8 @@ class CoreAnalyzer:
         self.taint_analyzer = TaintAnalyzer()
         self.security_analyzer = SecurityAnalyzer() 
         self.framework_analyzer = FrameworkAnalyzer()
-        self.vector_store = CodeVectorStore()
+        # 延迟初始化，避免单文件分析时加载大模型/向量库
+        self.vector_store = None
         self.parser = CodeParser()
         self.issues = []
         
@@ -172,47 +173,56 @@ class CoreAnalyzer:
 
     async def _static_scan(self, project_path: str) -> List[Dict[str, Any]]:
         """静态扫描项目文件"""
-        suspicious_files = []
+        suspicious_files: List[Dict[str, Any]] = []
         try:
             project_path = str(project_path)
-            valid_files = []
+            valid_files: List[str] = []
             
             # 扫描文件
             for root, _, files in os.walk(project_path):
                 for file in files:
                     file_path = os.path.join(root, file)
-                    if file_path.endswith(('.php', '.blade.php', '.js', '.ts', '.tsx', '.py')):
+                    if file_path.endswith(('.php', '.blade.php', '.js', '.ts', '.tsx', '.py', '.java', '.jsp', '.jspx')):
                         valid_files.append(file_path)
                         logger.debug(f"添加有效文件: {file_path}")
                         
             logger.info(f"找到 {len(valid_files)} 个待分析文件")
-            
-            # 分析每个文件
-            for file_path in valid_files:
-                try:
-                    # 读取文件内容
-                    content = self._read_file_content(file_path)
-                    if not content:
-                        logger.warning(f"无法读取文件内容: {file_path}")
-                        continue
-                        
-                    logger.debug(f"开始分析文件: {file_path}")
-                    
-                    # 检查可疑代码
-                    issues = self._check_suspicious(content, file_path)
-                    if issues:
-                        suspicious_files.append({
-                            "file_path": file_path,
-                            "issues": issues,
-                            "language": self._detect_language(file_path),
-                            "context": self._get_context_info(file_path)
-                        })
-                        logger.debug(f"发现 {len(issues)} 个问题: {file_path}")
-                        
-                except Exception as e:
-                    logger.error(f"分析文件失败 {file_path}: {str(e)}")
-                    continue
-                    
+
+            # 并发扫描单个文件
+            semaphore = asyncio.Semaphore(settings.SCAN_CONCURRENCY)
+            results: List[Dict[str, Any]] = []
+
+            async def scan_one(path: str):
+                async with semaphore:
+                    try:
+                        content = await asyncio.to_thread(self._read_file_content, path)
+                        if not content:
+                            return None
+                        # 行级/轻量污点检查
+                        line_issues = await asyncio.to_thread(self._check_suspicious, content, path)
+                        line_issues = await asyncio.to_thread(self._filter_false_positives, line_issues, content, path)
+                        # AST 检查
+                        ast_issues = await asyncio.to_thread(self._analyze_ast, content, path)
+                        # 合并去重
+                        combined = self._merge_issues(line_issues, ast_issues)
+                        if combined:
+                            return {
+                                "file_path": path,
+                                "issues": combined,
+                                "language": self._detect_language(path),
+                                "context": self._get_context_info(path)
+                            }
+                        return None
+                    except Exception as e:
+                        logger.error(f"分析文件失败 {path}: {str(e)}")
+                        return None
+
+            tasks = [scan_one(p) for p in valid_files]
+            for coro in asyncio.as_completed(tasks):
+                item = await coro
+                if item:
+                    suspicious_files.append(item)
+
             logger.info(f"扫描完成，发现 {len(suspicious_files)} 个可疑文件")
             return suspicious_files
             
@@ -312,8 +322,14 @@ class CoreAnalyzer:
     async def _import_to_vector_store(self, project_path: str) -> None:
         """将源代码导入向量数据库"""
         try:
+            # 延迟初始化向量库
+            if self.vector_store is None:
+                self.vector_store = CodeVectorStore()
+
             code_snippets = []
             project_path = Path(project_path)  # 转换为 Path 对象
+            
+            batch_size = getattr(settings, 'VECTOR_BATCH_SIZE', 300)
             
             for file_path in project_path.rglob("*"):
                 if not self._is_source_file(file_path):
@@ -346,6 +362,10 @@ class CoreAnalyzer:
                         }
                     })
                     
+                    if len(code_snippets) >= batch_size:
+                        await self.vector_store.add_code_to_store(code_snippets)
+                        code_snippets.clear()
+                    
                 except Exception as e:
                     logger.error(f"Error importing {file_path}: {str(e)}")
                     
@@ -356,19 +376,32 @@ class CoreAnalyzer:
             logger.error(f"导入向量数据库失败: {str(e)}")
             raise
 
-    async def _ai_verify_suspicious(self, suspicious_files: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def _ai_verify_suspicious(self, suspicious_files: List[Dict[str, Any]], config: Optional[Dict[str, Optional[str]]] = None) -> Dict[str, Any]:
         """AI验证可疑代码"""
         # 从配置文件读取API设置
-        config_path = Path(__file__).parent.parent.parent / "config" / "api_config.json"
-        if config_path.exists():
-            with open(config_path, "r") as f:
-                config = json.load(f)
-                api_key = config.get("api_key")
-                api_base = config.get("api_base")
-                model = config.get("model")
-        else:
+        api_key = None
+        api_base = None
+        model = None
+
+        if config:
+            api_key = config.get("api_key")
+            api_base = config.get("api_base")
+            model = config.get("model")
+
+        if not api_key:
+            config_path = Path(__file__).parent.parent.parent / "config" / "api_config.json"
+            if config_path.exists():
+                with open(config_path, "r") as f:
+                    persisted = json.load(f)
+                    api_key = persisted.get("api_key")
+                    api_base = persisted.get("api_base")
+                    model = persisted.get("model")
+
+        if not api_key:
             api_key = settings.OPENAI_API_KEY
+        if not api_base:
             api_base = settings.OPENAI_API_BASE
+        if not model:
             model = settings.OPENAI_MODEL
 
         if not api_key:
@@ -380,18 +413,18 @@ class CoreAnalyzer:
             base_url=api_base
         )
 
-        results = {}
+        results: Dict[str, Any] = {}
+        semaphore = asyncio.Semaphore(getattr(settings, 'AI_CONCURRENCY', 3))
+        timeout_sec = getattr(settings, 'AI_TIMEOUT_SEC', 120)
         
-        for file_info in suspicious_files:
+        async def analyze_one(file_info: Dict[str, Any]):
             file_path = file_info["file_path"]
-            
             try:
                 # 获取文件内容
                 content = self._get_file_content(file_path)
                 if not content:
-                    continue
-                    
-                # 构建分析提示
+                    return
+                
                 prompt = f"""请对以下代码进行安全审计并以JSON格式返回分析结果：
 
 文件路径: {file_path}
@@ -430,17 +463,28 @@ class CoreAnalyzer:
         }}
     }}
 }}"""
-
-                # 调用AI API
+                
+                async with semaphore:
+                    try:
+                        ai_analysis = await asyncio.wait_for(
+                            self._call_ai_api(prompt, client, model),
+                            timeout=timeout_sec
+                        )
+                    except asyncio.TimeoutError:
+                        ai_analysis = {"status": "error", "message": "timeout"}
+                
                 results[file_path] = {
                     "issues": file_info.get('issues', []),
                     "similar_code": [],
-                    "ai_analysis": await self._call_ai_api(prompt)
+                    "ai_analysis": ai_analysis
                 }
-                
             except Exception as e:
                 logger.error(f"AI分析失败 {file_path}: {str(e)}")
-                continue
+                return
+        
+        tasks = [analyze_one(fi) for fi in suspicious_files]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         
         return results
 
@@ -632,32 +676,9 @@ class CoreAnalyzer:
             logger.error(f"生成分析提示失败: {str(e)}")
             return ""
         
-    async def _call_ai_api(self, prompt: str) -> Dict:
+    async def _call_ai_api(self, prompt: str, client: AsyncOpenAI, model: Optional[str]) -> Dict:
         """调用AI API进行代码分析"""
         try:
-            # 从配置文件读取API设置
-            config_path = Path(__file__).parent.parent.parent / "config" / "api_config.json"
-            if config_path.exists():
-                with open(config_path, "r") as f:
-                    config = json.load(f)
-                    api_key = config.get("api_key")
-                    api_base = config.get("api_base")
-                    model = config.get("model")
-            else:
-                # 如果配置文件不存在,使用环境变量或默认值
-                api_key = settings.OPENAI_API_KEY
-                api_base = settings.OPENAI_API_BASE
-                model = settings.OPENAI_MODEL
-
-            if not api_key:
-                raise ValueError("未配置API密钥")
-
-            # 创建 OpenAI 客户端
-            client = AsyncOpenAI(
-                api_key=api_key,
-                base_url=api_base
-            )
-            
             # 调用 API
             response = await client.chat.completions.create(
                 model=model,
@@ -813,8 +834,9 @@ class CoreAnalyzer:
             else:
                 return []
                 
-            # 访问AST节点
-            issues.extend(visitor.visit(ast))
+            # 访问AST节点并收集结果
+            visitor.visit(ast)
+            issues.extend(getattr(visitor, 'issues', []) or [])
             
             # 添加文件信息
             for issue in issues:
@@ -1051,59 +1073,169 @@ class CoreAnalyzer:
         """简单的PHP代码检查"""
         issues = []
         try:
-            # 危险函数列表
-            dangerous_functions = [
-                'eval', 'exec', 'system', 'shell_exec', 'passthru',
-                'popen', 'proc_open', 'pcntl_exec', '`', 'assert'
-            ]
-            
-            # SQL注入风险函数
-            sql_functions = [
-                'mysql_query', 'mysqli_query', 'pg_query',
-                'sqlite_query', 'db_query'
-            ]
-            
-            # 文件操作风险函数
-            file_functions = [
-                'fopen', 'file_get_contents', 'file_put_contents',
-                'unlink', 'rmdir', 'mkdir', 'rename', 'copy'
-            ]
-            
-            # 按行检查代码
+            # 基于 OWASP WSTG File Inclusion / SQL Injection 指南扩展污点追踪
+            source_pattern = re.compile(r'\$_(GET|POST|REQUEST|COOKIE|FILES|SERVER|ENV)\b')
+            assignment_pattern = re.compile(r'^\s*(\$[A-Za-z_][\w]*)\s*=\s*(.+);')
+            function_call_pattern = re.compile(r'([\$\\A-Za-z_][\w\\]*?(?:->\w+)*)\s*\(([^)]*)\)')
+
+            sink_catalog = {
+                'eval': ('code_execution', 'high'),
+                'exec': ('code_execution', 'high'),
+                'system': ('code_execution', 'high'),
+                'shell_exec': ('code_execution', 'high'),
+                'passthru': ('code_execution', 'high'),
+                'popen': ('code_execution', 'high'),
+                'proc_open': ('code_execution', 'high'),
+                'pcntl_exec': ('code_execution', 'high'),
+                '`': ('code_execution', 'high'),
+                'assert': ('code_execution', 'high'),
+                'mysql_query': ('sql_injection', 'high'),
+                'mysqli_query': ('sql_injection', 'high'),
+                'pg_query': ('sql_injection', 'high'),
+                'sqlite_query': ('sql_injection', 'high'),
+                'db_query': ('sql_injection', 'high'),
+                'pdo->query': ('sql_injection', 'high'),
+                'query': ('sql_injection', 'medium'),
+                'execute': ('sql_injection', 'medium'),
+                'fopen': ('file_operation', 'medium'),
+                'file_get_contents': ('file_operation', 'medium'),
+                'file_put_contents': ('file_operation', 'medium'),
+                'unlink': ('file_operation', 'medium'),
+                'rmdir': ('file_operation', 'medium'),
+                'mkdir': ('file_operation', 'medium'),
+                'rename': ('file_operation', 'medium'),
+                'copy': ('file_operation', 'medium'),
+                'include': ('file_inclusion', 'high'),
+                'require': ('file_inclusion', 'high'),
+                'include_once': ('file_inclusion', 'high'),
+                'require_once': ('file_inclusion', 'high')
+            }
+
+            sanitizers = {
+                'htmlspecialchars', 'htmlentities', 'filter_var',
+                'mysqli_real_escape_string', 'addslashes', 'intval',
+                'floatval', 'strip_tags'
+            }
+
+            tainted_vars: Set[str] = set()
+            sanitized_vars: Set[str] = set()
+            seen_issues: Set[Tuple[int, str, str]] = set()
+
+            def contains_sanitizer(expr: str) -> bool:
+                return any(re.search(rf'{func}\s*\(', expr) for func in sanitizers)
+
+            def add_issue(issue_type: str, line: int, description: str, severity: str):
+                key = (line, issue_type, description)
+                if key not in seen_issues:
+                    seen_issues.add(key)
+                    issues.append({
+                        'type': issue_type,
+                        'line': line,
+                        'description': description,
+                        'severity': severity
+                    })
+
             lines = content.split('\n')
-            for i, line in enumerate(lines, 1):
-                # 检查危险函数
-                for func in dangerous_functions:
-                    if f"{func}(" in line:
-                        issues.append({
-                            'type': 'dangerous_function',
-                            'line': i,
-                            'description': f'发现危险函数: {func}',
-                            'severity': 'high'
-                        })
-                        
-                # 检查SQL注入风险
-                for func in sql_functions:
-                    if f"{func}(" in line and '$_' in line:
-                        issues.append({
-                            'type': 'sql_injection',
-                            'line': i,
-                            'description': f'可能的SQL注入风险: {func}',
-                            'severity': 'high'
-                        })
-                        
-                # 检查文件操作风险
-                for func in file_functions:
-                    if f"{func}(" in line and '$_' in line:
-                        issues.append({
-                            'type': 'file_operation',
-                            'line': i,
-                            'description': f'不安全的文件操作: {func}',
-                            'severity': 'medium'
-                        })
-                        
+
+            # 额外的启发式正则（非污点依赖）：
+            # 检查赋值的右侧是否以 SQL 关键词开头（可带引号）
+            sqli_query_assign = re.compile(r'^\s*[\'\"]?\s*(SELECT|INSERT|UPDATE|DELETE)\b', re.I)
+            # 检查是否存在字符串拼接变量（如 "..." . $id 或 $id . "...")
+            sqli_concat = re.compile(r'(?:\$[A-Za-z_]\w*\s*\.|\.[\s\n]*\$[A-Za-z_]\w*)')
+            xss_echo = re.compile(r'\becho\b\s*(\$\w+|.+\.\s*\$\w+)', re.I)
+            insecure_upload = re.compile(r'move_uploaded_file\s*\(', re.I)
+            weak_hash = re.compile(r'\b(md5|sha1)\s*\(', re.I)
+            unsafe_unserialize = re.compile(r'\bunserialize\s*\(', re.I)
+            session_fix = re.compile(r'\$_SESSION\s*\[[^\]]+\]\s*=\s*(mt_rand|rand)\s*\(', re.I)
+            idor_pattern = re.compile(r'SELECT\s+\*.*WHERE\s+\w+_id\s*=\s*\.\s*\$\w+', re.I)
+            hpp_pattern = re.compile(r'\$_REQUEST\s*\[', re.I)
+
+            for idx, line in enumerate(lines, 1):
+                stripped = line.strip()
+
+                # 1. 变量赋值追踪
+                assign_match = assignment_pattern.match(stripped)
+                if assign_match:
+                    var_name, rhs = assign_match.groups()
+                    rhs_contains_source = bool(source_pattern.search(rhs))
+                    rhs_contains_tainted = any(tv in rhs for tv in tainted_vars)
+                    if rhs_contains_source or rhs_contains_tainted:
+                        if contains_sanitizer(rhs):
+                            sanitized_vars.add(var_name)
+                            tainted_vars.discard(var_name)
+                        else:
+                            tainted_vars.add(var_name)
+                    # 启发式 SQL 拼接检测（$query = "SELECT ..." . $id）
+                    if sqli_query_assign.search(rhs) and ('.' in rhs or sqli_concat.search(rhs)):
+                        add_issue('sql_injection', idx, '疑似将用户输入拼接进 SQL 语句', 'high')
+                    continue
+
+                # 2. 函数调用（考虑同一行多个调用）
+                for call in function_call_pattern.finditer(line):
+                    func_raw, args = call.groups()
+                    func_key = func_raw.lower()
+
+                    if '->' in func_key:
+                        _, method_part = func_key.rsplit('->', 1)
+                        normalized_key = method_part if method_part in sink_catalog else func_key
+                    else:
+                        normalized_key = func_key
+
+                    args_has_source = bool(source_pattern.search(args))
+                    args_has_tainted = any(var in args for var in tainted_vars if var not in sanitized_vars)
+                    args_has_dynamic_path = bool(re.search(r'(\.\.|/|\\|\$|https?://)', args))
+
+                    if normalized_key in sink_catalog:
+                        issue_type, default_severity = sink_catalog[normalized_key]
+                        severity = default_severity
+
+                        if issue_type == 'file_inclusion':
+                            if args_has_source or args_has_tainted:
+                                severity = 'high'
+                            elif args_has_dynamic_path:
+                                severity = 'medium'
+                            else:
+                                continue
+
+                        if issue_type in {'sql_injection', 'file_operation'} and not (args_has_source or args_has_tainted):
+                            if issue_type == 'sql_injection' and re.search(r'\$\w+\s*\.', args):
+                                severity = 'medium'
+                            else:
+                                # 没看见输入污染时，先跳过避免误报
+                                continue
+
+                        add_issue(issue_type, idx, f'发现潜在的{issue_type.replace("_", " ")}风险: {func_raw}', severity)
+
+                    elif func_key in sink_catalog:
+                        issue_type, severity = sink_catalog[func_key]
+                        add_issue(issue_type, idx, f'发现危险函数调用: {func_raw}', severity)
+
+                    # 上传风险：move_uploaded_file
+                    if insecure_upload.search(func_key):
+                        add_issue('insecure_upload', idx, '检测到未校验的文件上传(move_uploaded_file)', 'medium')
+
+                    # 反序列化风险
+                    if unsafe_unserialize.search(func_key) or unsafe_unserialize.search(args):
+                        add_issue('insecure_deserialization', idx, '检测到不安全的反序列化(unserialize)', 'high')
+
+                # 3. 反引号执行检测
+                if '`' in line:
+                    add_issue('code_execution', idx, '发现疑似反引号命令执行', 'high')
+
+                # 4. 其他启发式检测
+                if xss_echo.search(line) and not contains_sanitizer(line):
+                    add_issue('xss', idx, '检测到未转义输出（echo）', 'medium')
+                if weak_hash.search(line):
+                    add_issue('weak_crypto', idx, '检测到弱哈希算法（md5/sha1）', 'medium')
+                if session_fix.search(line):
+                    add_issue('session_fixation', idx, '会话标识/权限控制可能被弱随机数或手动设置影响', 'medium')
+                if idor_pattern.search(line):
+                    add_issue('access_control', idx, '疑似基于外部输入的直接对象引用（IDOR）', 'medium')
+                if hpp_pattern.search(line):
+                    add_issue('http_parameter_pollution', idx, '检测到使用 $_REQUEST，可能引入参数污染风险', 'low')
+
             return issues
-            
+
         except Exception as e:
             logger.error(f"PHP代码检查失败: {str(e)}")
             return []

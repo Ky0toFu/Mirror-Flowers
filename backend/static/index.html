@@ -415,9 +415,7 @@
                 if (!apiBase.startsWith('http')) {
                     apiBase = 'https://' + apiBase;
                 }
-                if (!apiBase.endsWith('/v1')) {
-                    apiBase = apiBase.replace(/\/+$/, '') + '/v1';
-                }
+                // 不在前端强制拼接 /v1，由后端统一归一化（支持 Z.AI /api/paas/v4 等）
             }
 
             try {
@@ -828,11 +826,23 @@
             resultsDiv.style.display = 'block';
             resultsDiv.innerHTML = '';
 
-            // 显示总体摘要，添加风险等级对应的颜色
+            // 统一文件列表（兼容单文件与项目）
+            const files = Array.isArray(result.suspicious_files) && result.suspicious_files.length > 0
+                ? result.suspicious_files
+                : (result.details?.suspicious_files && Array.isArray(result.details.suspicious_files) && result.details.suspicious_files.length > 0
+                    ? result.details.suspicious_files
+                    : (Array.isArray(result.issues) && result.issues.length > 0
+                        ? [{ file_path: (result.details?.project_info?.name || 'uploaded_file'), issues: result.issues }]
+                        : []));
+
+            // 计算摘要
+            const totalIssues = result.summary?.total_issues ?? files.reduce((acc, f) => acc + (Array.isArray(f.issues) ? f.issues.length : 0), 0);
+            const riskLevel = (result.summary?.risk_level || 'unknown').toLowerCase();
+
+            // 显示总体摘要
             const summaryCard = document.createElement('div');
             summaryCard.className = 'card mb-4';
-            const riskLevelColor = result.summary.risk_level === 'high' ? 'danger' : 
-                                  result.summary.risk_level === 'medium' ? 'warning' : 'info';
+            const riskLevelColor = riskLevel === 'high' ? 'danger' : riskLevel === 'medium' ? 'warning' : 'info';
             
             summaryCard.innerHTML = `
                 <div class="card-header bg-${riskLevelColor} text-white">
@@ -846,39 +856,37 @@
                             ${result.message ? `<p><i class="bi bi-info-circle-fill"></i> 消息: ${result.message}</p>` : ''}
                         </div>
                         <div class="col-md-6">
-                            <p><i class="bi bi-file-earmark-text"></i> 发现可疑文件数: ${result.suspicious_files?.length || 0}</p>
-                            ${result.summary ? `
-                                <p><i class="bi bi-exclamation-triangle-fill text-${riskLevelColor}"></i> 
-                                   总问题数: ${result.summary.total_issues}</p>
-                                <p><i class="bi bi-shield-fill-exclamation"></i> 
-                                   风险等级: <span class="badge bg-${riskLevelColor}">${result.summary.risk_level.toUpperCase()}</span></p>
-                            ` : ''}
+                            <p><i class="bi bi-file-earmark-text"></i> 发现可疑文件数: ${files.length}</p>
+                            <p><i class="bi bi-exclamation-triangle-fill text-${riskLevelColor}"></i> 
+                               总问题数: ${totalIssues}</p>
+                            <p><i class="bi bi-shield-fill-exclamation"></i> 
+                               风险等级: <span class="badge bg-${riskLevelColor}">${(riskLevel || 'UNKNOWN').toUpperCase()}</span></p>
                         </div>
                     </div>
                 </div>
             `;
             resultsDiv.appendChild(summaryCard);
 
-            // 显示每个可疑文件的详细信息
-            if (result.suspicious_files && Array.isArray(result.suspicious_files)) {
+            if (files.length > 0) {
                 const accordion = document.createElement('div');
                 accordion.className = 'accordion mb-4';
                 accordion.id = 'filesAccordion';
 
-                result.suspicious_files.forEach((file, index) => {
+                files.forEach((file, index) => {
                     const fileCard = document.createElement('div');
                     fileCard.className = 'accordion-item';
+                    const hasHighSeverity = Array.isArray(file.issues) && file.issues.some(issue => issue.severity === 'high');
                     
-                    // 安全地访问 AI 验证结果
+                    // 取 AI 验证（仅项目模式返回）
                     const aiVerification = result.ai_verification?.[file.file_path];
-                    const hasHighSeverity = file.issues.some(issue => issue.severity === 'high');
+                    const normalized = aiVerification?.ai_analysis?.analysis || {};
                     
                     fileCard.innerHTML = `
                         <h2 class="accordion-header">
                             <button class="accordion-button ${hasHighSeverity ? 'text-danger' : ''}" type="button" 
                                     data-bs-toggle="collapse" data-bs-target="#collapse${index}">
                                 <i class="bi bi-file-earmark-code me-2"></i>
-                                ${file.file_path.split('\\').pop()} 
+                                ${(file.file_path || '').split('\\').pop() || file.file_path || 'uploaded_file'}
                                 ${hasHighSeverity ? '<span class="badge bg-danger ms-2">高危</span>' : ''}
                             </button>
                         </h2>
@@ -886,92 +894,128 @@
                              data-bs-parent="#filesAccordion">
                             <div class="accordion-body">
                                 <div class="mb-3">
-                                    <h6><i class="bi bi-bug"></i> 发现的问题:</h6>
-                                    <div class="list-group">
-                                        ${file.issues.map(issue => `
-                                            <div class="list-group-item">
-                                                <div class="d-flex justify-content-between align-items-center">
-                                                    <span class="badge bg-${issue.severity === 'high' ? 'danger' : 
-                                                          issue.severity === 'medium' ? 'warning' : 'info'} me-2">
-                                                        ${issue.severity.toUpperCase()}
-                                                    </span>
-                                                    <span class="flex-grow-1 ms-2">${issue.description}</span>
+                                    <h6><i class="bi bi-bug"></i> 发现的问题（按类型分类）:</h6>
+                                    ${(() => {
+                                        const issues = Array.isArray(file.issues) ? file.issues : [];
+                                        const groups = {};
+                                        issues.forEach(it => {
+                                            const t = (it.type || '其他').toLowerCase();
+                                            if (!groups[t]) groups[t] = [];
+                                            groups[t].push(it);
+                                        });
+                                        const typeOrder = ['sql_injection','xss','file_inclusion','code_execution','file_operation','insecure_upload','insecure_deserialization','weak_crypto','session_fixation','access_control','http_parameter_pollution','other','其他'];
+                                        const ordered = Object.keys(groups).sort((a,b)=>{
+                                            const ia = typeOrder.indexOf(a); const ib = typeOrder.indexOf(b);
+                                            return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+                                        });
+                                        return ordered.map(typeKey => {
+                                            const list = groups[typeKey];
+                                            const title = typeKey.replace(/_/g,' ');
+                                            return `
+                                                <div class="mb-2">
+                                                    <div class="d-flex align-items-center mb-1">
+                                                        <span class="badge bg-secondary me-2">${title}</span>
+                                                        <small class="text-muted">共 ${list.length} 条</small>
+                                                    </div>
+                                                    <div class="list-group">
+                                                        ${list.map(issue => `
+                                                            <div class="list-group-item">
+                                                                <div class="d-flex justify-content-between align-items-center">
+                                                                    <span class="badge bg-${issue.severity === 'high' ? 'danger' : (issue.severity === 'medium' ? 'warning' : 'info')} me-2">
+                                                                        ${(issue.severity || 'info').toUpperCase()}
+                                                                    </span>
+                                                                    <span class="flex-grow-1 ms-2">${issue.description || ''}</span>
+                                                                </div>
+                                                                ${issue.line ? `
+                                                                    <small class="text-muted">
+                                                                        <i class="bi bi-code-slash"></i> 行号: ${issue.line}
+                                                                    </small>
+                                                                ` : ''}
+                                                            </div>
+                                                        `).join('')}
+                                                    </div>
                                                 </div>
-                                                ${issue.line ? `
-                                                    <small class="text-muted">
-                                                        <i class="bi bi-code-slash"></i> 行号: ${issue.line}
-                                                    </small>
-                                                ` : ''}
-                                            </div>
-                                        `).join('')}
-                                    </div>
+                                            `;
+                                        }).join('');
+                                    })()}
                                 </div>
                                 
-                                ${aiVerification?.ai_analysis?.analysis?.raw_text ? (() => {
-                                    try {
-                                        const analysis = JSON.parse(aiVerification.ai_analysis.analysis.raw_text);
-                                        return `
+                                ${(() => {
+                                    // 优先使用标准化字段 vulnerabilities/recommendations
+                                    const vulns = Array.isArray(normalized.vulnerabilities) ? normalized.vulnerabilities : [];
+                                    const recs = Array.isArray(normalized.recommendations) ? normalized.recommendations : [];
+
+                                    const parts = [];
+                                    if (vulns.length > 0) {
+                                        parts.push(`
                                             <div class="mt-4">
-                                                <h6><i class="bi bi-robot"></i> AI 分析建议:</h6>
-                                                
-                                                <!-- 漏洞确认 -->
-                                                <div class="alert alert-info">
-                                                    <h6 class="alert-heading">
-                                                        <i class="bi bi-shield-fill"></i> 漏洞确认
-                                                    </h6>
-                                                    <hr>
-                                                    <p>${analysis.vulnerability_confirmation.dangerous_function.evidence}</p>
-                                                    <p><strong>是否误报:</strong> 
-                                                        ${analysis.vulnerability_confirmation.dangerous_function.is_false_positive ? '是' : '否'}
-                                                    </p>
-                                                </div>
-
-                                                <!-- 影响分析 -->
-                                                <div class="alert alert-warning">
-                                                    <h6 class="alert-heading">
-                                                        <i class="bi bi-exclamation-triangle"></i> 影响分析
-                                                    </h6>
-                                                    <hr>
-                                                    <p><strong>严重程度:</strong> ${analysis.impact_analysis.dangerous_function.severity}</p>
-                                                    <p><strong>利用条件:</strong> ${analysis.impact_analysis.dangerous_function.exploit_conditions}</p>
-                                                    <p><strong>影响范围:</strong> ${analysis.impact_analysis.dangerous_function.impact_scope}</p>
-                                                </div>
-
-                                                <!-- 修复建议 -->
-                                                <div class="alert alert-success">
-                                                    <h6 class="alert-heading">
-                                                        <i class="bi bi-tools"></i> 修复建议
-                                                    </h6>
-                                                    <hr>
-                                                    <p><strong>代码级修复:</strong> ${analysis.remediation_suggestions.dangerous_function.code_level_fix}</p>
-                                                    <p><strong>安全编码实践:</strong> ${analysis.remediation_suggestions.dangerous_function.secure_coding_practices}</p>
-                                                    <p><strong>安全配置建议:</strong> ${analysis.remediation_suggestions.dangerous_function.security_configuration_suggestions}</p>
-                                                </div>
-
-                                                <!-- 关联分析 -->
-                                                <div class="alert alert-info">
-                                                    <h6 class="alert-heading">
-                                                        <i class="bi bi-diagram-3"></i> 关联分析
-                                                    </h6>
-                                                    <hr>
-                                                    <p><strong>关联性:</strong> ${analysis.correlation_analysis.dangerous_function.association}</p>
-                                                    <p><strong>组合利用:</strong> ${analysis.correlation_analysis.dangerous_function.exploit_combination}</p>
-                                                    <p><strong>整体修复策略:</strong> ${analysis.correlation_analysis.dangerous_function.overall_remediation_strategy}</p>
+                                                <h6><i class="bi bi-robot"></i> AI 漏洞确认</h6>
+                                                <div class="list-group">
+                                                    ${vulns.map(v => `
+                                                        <div class="list-group-item">
+                                                            <span class="badge bg-${(v.severity || 'info') === 'high' ? 'danger' : (v.severity === 'medium' ? 'warning' : 'info') } me-2">
+                                                                ${(v.severity || 'info').toUpperCase()}
+                                                            </span>
+                                                            <strong>${v.type || ''}</strong>
+                                                            <div class="mt-1 text-muted">${v.description || ''}</div>
+                                                        </div>
+                                                    `).join('')}
                                                 </div>
                                             </div>
-                                        `;
-                                    } catch (e) {
-                                        console.error('解析 AI 分析结果失败:', e);
-                                        return `
-                                            <div class="alert alert-danger">
-                                                <h6 class="alert-heading">AI 分析结果解析失败</h6>
-                                                <hr>
-                                                <p>错误信息: ${e.message}</p>
-                                                <pre class="mt-2">${aiVerification.ai_analysis.analysis.raw_text}</pre>
-                                            </div>
-                                        `;
+                                        `);
                                     }
-                                })() : ''}
+                                    if (recs.length > 0) {
+                                        parts.push(`
+                                            <div class="mt-4">
+                                                <h6><i class="bi bi-tools"></i> AI 修复建议</h6>
+                                                <div class="list-group">
+                                                    ${recs.map(r => `
+                                                        <div class="list-group-item">
+                                                            <strong>${r.issue || ''}</strong>
+                                                            <div class="mt-1 text-muted">${r.solution || ''}</div>
+                                                        </div>
+                                                    `).join('')}
+                                                </div>
+                                            </div>
+                                        `);
+                                    }
+
+                                    // 如果没有标准化字段，但有 raw_text，尽量渲染关键段落
+                                    if (parts.length === 0 && typeof normalized.raw_text === 'string' && normalized.raw_text.trim()) {
+                                        try {
+                                            const parsed = JSON.parse(normalized.raw_text);
+                                            const keys = Object.keys(parsed || {});
+                                            parts.push(`
+                                                <div class="mt-4">
+                                                    <h6><i class="bi bi-robot"></i> AI 分析（原始JSON）</h6>
+                                                    <pre>${normalized.raw_text}</pre>
+                                                </div>
+                                            `);
+                                            // 尝试从常见键中提取摘要
+                                            ['vulnerability_confirmation','impact_analysis','remediation_suggestions','correlation_analysis'].forEach(k => {
+                                                if (parsed[k]) {
+                                                    parts.push(`
+                                                        <div class="mt-2">
+                                                            <h6>${k}</h6>
+                                                            <pre>${JSON.stringify(parsed[k], null, 2)}</pre>
+                                                        </div>
+                                                    `);
+                                                }
+                                            });
+                                        } catch (e) {
+                                            parts.push(`
+                                                <div class="alert alert-danger mt-3">
+                                                    <h6 class="alert-heading">AI 分析结果解析失败</h6>
+                                                    <hr>
+                                                    <p>错误信息: ${e.message}</p>
+                                                    <pre class="mt-2">${normalized.raw_text || ''}</pre>
+                                                </div>
+                                            `);
+                                        }
+                                    }
+
+                                    return parts.join('');
+                                })()}
                             </div>
                         </div>
                     `;
@@ -982,8 +1026,8 @@
                 resultsDiv.appendChild(accordion);
             }
 
-            // 显示修复建议
-            if (result.recommendations?.length > 0) {
+            // 显示聚合修复建议（来自后端汇总）
+            if (Array.isArray(result.recommendations) && result.recommendations.length > 0) {
                 const recommendationsCard = document.createElement('div');
                 recommendationsCard.className = 'card mt-4';
                 recommendationsCard.innerHTML = `
@@ -997,8 +1041,8 @@
                                     <div class="d-flex align-items-center">
                                         <i class="bi bi-file-earmark-text me-2"></i>
                                         <div>
-                                            <strong>${rec.file.split('\\').pop()}</strong>
-                                            <p class="mb-0 text-muted">${rec.recommendation}</p>
+                                            <strong>${(rec.file || '').split('\\').pop()}</strong>
+                                            <p class="mb-0 text-muted">${rec.solution || rec.issue || ''}</p>
                                         </div>
                                     </div>
                                 </div>

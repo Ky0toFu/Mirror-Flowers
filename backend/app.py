@@ -5,25 +5,20 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, validator
+from pydantic import BaseModel
 from openai import AsyncOpenAI
+from typing import List, Optional, Dict, Set
 import os
-from typing import List, Optional, Dict, Set, Tuple
-import aiohttp
 import logging
-from pydantic_settings import BaseSettings
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from enum import Enum
 from urllib.parse import urlparse
-import asyncio
 import zipfile
-from pathlib import Path
-import tempfile
-import json
+import tarfile
 from core.analyzers import CoreAnalyzer
 from .config import settings, paths
 from .services import CodeAuditService
@@ -141,9 +136,8 @@ async def get_available_models(
         api_base = audit_service.api_base or settings.OPENAI_API_BASE
         api_key = audit_service.openai_api_key or settings.OPENAI_API_KEY
         
-        if not api_base.endswith('/v1'):
-            api_base = api_base.rstrip('/') + '/v1'
-            
+        api_base = audit_service._normalize_base_url(api_base)
+        
         # 创建 OpenAI 客户端
         client = AsyncOpenAI(
             api_key=api_key,
@@ -151,11 +145,9 @@ async def get_available_models(
         )
         
         try:
-            # 直接从 API 获取模型列表
             models_response = await client.models.list()
             available_models = [m.id for m in models_response.data]
             
-            # 按类型分类模型
             models_by_type = {
                 "Chat": [],
                 "Image": [],
@@ -164,27 +156,21 @@ async def get_available_models(
             }
             
             for model_id in available_models:
-                if model_id.startswith('01-ai/'):
+                lower_id = model_id.lower()
+                # 常见 Chat 模型
+                if any(x in lower_id for x in [
+                    'gpt', 'claude', 'qwen', 'glm', 'deepseek', 'kimi', 'moonshot', 'sonnet', 'haiku', 'opus'
+                ]):
                     models_by_type["Chat"].append(model_id)
-                elif any(x in model_id.lower() for x in ['sd', 'stable-diffusion']):
-                    models_by_type["Image"].append(model_id)
-                elif any(x in model_id.lower() for x in ['speech', 'voice', 'audio']):
-                    models_by_type["Audio"].append(model_id)
-                elif 'embedding' in model_id.lower():
+                elif 'embedding' in lower_id:
                     models_by_type["Embedding"].append(model_id)
                 else:
                     models_by_type["Chat"].append(model_id)
             
-            # 获取当前使用的模型
-            current_model = audit_service.model
-            if not current_model:
-                # 如果没有设置当前模型，从可用模型中选择一个
-                chat_models = models_by_type.get("Chat", [])
-                yi_models = [m for m in chat_models if m.startswith('01-ai/Yi-1.5')]
-                current_model = yi_models[0] if yi_models else (chat_models[0] if chat_models else None)
-                if current_model:
-                    audit_service.model = current_model
-                    await audit_service.save_config()
+            current_model = audit_service.model or (models_by_type["Chat"][0] if models_by_type["Chat"] else None)
+            if current_model:
+                audit_service.model = current_model
+                await audit_service.save_config()
             
             logger.info(f"当前API地址: {api_base}")
             logger.info(f"可用模型: {models_by_type}")
@@ -197,25 +183,28 @@ async def get_available_models(
             
         except Exception as e:
             logger.error(f"从API获取模型列表失败: {str(e)}")
-            # 如果API获取失败，使用默认配置
-            default_models = {
-                "Chat": [
-                    "01-ai/Yi-1.5-34B-Chat-16K",
-                    "01-ai/Yi-1.5-6B-Chat",
-                    "01-ai/Yi-1.5-9B-Chat-16K",
-                    "THUDM/chatglm3-6b",
-                    "THUDM/glm-4-9b-chat"
-                ],
-                "Embedding": [
-                    "BAAI/bge-large-zh-v1.5",
-                    "BAAI/bge-large-en-v1.5"
-                ]
-            }
-            current_model = audit_service.model or default_models["Chat"][0]
-            return {
-                "models": default_models,
-                "current_model": current_model
-            }
+            # 基于已知提供商提供默认列表
+            domain = urlparse(api_base).netloc
+            if 'z.ai' in domain:
+                default_models = {"Chat": ["glm-4.5", "glm-4.5v"], "Embedding": []}
+            elif 'siliconflow' in domain:
+                default_models = {"Chat": [
+                    "deepseek-ai/DeepSeek-R1",
+                    "deepseek-ai/DeepSeek-V3.1",
+                    "moonshotai/Kimi-K2-Instruct",
+                    "moonshotai/Kimi-K2-Instruct-0905",
+                    "zai-org/GLM-4.5",
+                    "zai-org/GLM-4.5-Air"
+                ]}
+            else:
+                default_models = {
+                    "Chat": [
+                        "gpt-4.1", "gpt-4o", "claude-3.5-sonnet", "gemini-1.5-pro"
+                    ],
+                    "Embedding": []
+                }
+            current_model = audit_service.model or (default_models["Chat"][0] if default_models["Chat"] else None)
+            return {"models": default_models, "current_model": current_model}
             
     except Exception as e:
         logger.error(f"获取模型列表失败: {str(e)}")
@@ -246,8 +235,8 @@ async def configure_api(
 @app.post("/api/audit")
 async def audit_code(
     file: UploadFile = File(...),
-    api_key: str = "sk-gegzkusxlqrcqhrrobzqahckpfctmrnwjprjjesbvflgmris",
-    api_base: str = "https://api.siliconflow.cn/v1",
+    api_key: str = Form(None),
+    api_base: str = Form(None),
     audit_service: CodeAuditService = Depends(get_audit_service)
 ):
     """审计代码，支持自定义API设置"""
@@ -256,12 +245,17 @@ async def audit_code(
         code = content.decode()
         
         # 获取文件扩展名并检查支持的类型
-        file_extension = os.path.splitext(file.filename)[1].lower()
         language = audit_service._check_file_type(file.filename)
         
         logger.info(f"开始分析{file.filename}")
-        result = await audit_service.analyze_code(code, language, api_key, api_base)
-        print(result)
+        
+        result = await audit_service.analyze_code(
+            code,
+            language,
+            api_key=api_key,
+            api_base=api_base,
+            file_name=file.filename
+        )
         return result
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="文件编码错误")
@@ -274,8 +268,8 @@ async def audit_code(
 @app.post("/api/audit/project")
 async def audit_project(
     project: UploadFile = File(...),
-    api_key: str = None,
-    api_base: str = None,
+    api_key: str = Form(None),
+    api_base: str = Form(None),
     audit_service: CodeAuditService = Depends(get_audit_service)
 ):
     """审计整个项目代码"""
@@ -366,10 +360,13 @@ async def save_project_file(project: UploadFile) -> str:
             f.write(content)
             
         # 如果是压缩文件，解压
-        if file_path.endswith(('.zip', '.tar.gz')):
-            import zipfile
+        if file_path.endswith('.zip'):
             with zipfile.ZipFile(file_path, 'r') as zip_ref:
                 zip_ref.extractall(temp_dir)
+            os.remove(file_path)
+        elif file_path.endswith(('.tar.gz', '.tgz')):
+            with tarfile.open(file_path, 'r:gz') as tar_ref:
+                tar_ref.extractall(temp_dir)
             os.remove(file_path)
             
         return temp_dir
