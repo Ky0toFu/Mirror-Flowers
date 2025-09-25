@@ -1,1 +1,0 @@
-invalid type: string "<?php\n// 示例：包含多种安全漏洞的PHP文件\n// 警告：此代码仅用于教育目的，不要在生产环境中使用\n\n// 漏洞1：SQL注入漏洞\nfunction getUserData($id) {\n    $conn = new mysqli(\"localhost\", \"root\", \"password\", \"myDB\");\n    \n    // 直接拼接用户输入到SQL查询中\n    $query = \"SELECT * FROM users WHERE id = \" . $id;
